@@ -1,0 +1,43 @@
+# simulate_conflict.py (conceptual)
+from sync_two_way import local_engine, remote_engine, create_local_item, now_utc
+from sqlalchemy import update, select
+from sync_two_way import get_table_def
+import time
+
+# Create an item on remote with same id as local, but older timestamp
+md_local, items_local, _ = get_table_def(local_engine)
+md_remote, items_remote, _ = get_table_def(remote_engine)
+
+# create local item
+local_id = create_local_item(local_engine, {"v": 1})
+print("Local created id:", local_id)
+
+# sync to push to remote
+sync_two_way(local_engine, remote_engine)
+
+# Now modify the remote record with an older timestamp (simulate clock skew or late write)
+with remote_engine.connect() as rconn:
+    old_time = now_utc()  # pick current
+    # set older by 10 seconds
+    old_time = old_time.replace(microsecond=0) 
+    old_time = old_time - timedelta(seconds=10)
+    rconn.execute(
+        update(items_remote).where(items_remote.c.id == local_id).values(
+            payload='{"v": 99}',
+            updated_at=old_time,
+            deleted=False
+        )
+    )
+
+# Modify local with newer timestamp
+with local_engine.connect() as lconn:
+    new_time = now_utc()
+    lconn.execute(
+        update(items_local).where(items_local.c.id == local_id).values(
+            payload='{"v": 2}',
+            updated_at=new_time
+        )
+    )
+
+# Run sync again, LWW should keep local (v:2) because it has newer updated_at
+sync_two_way(local_engine, remote_engine)
